@@ -1,0 +1,39 @@
+{
+  "network": "133",
+  "deployer": "0xBfC5B7749F70f7905e98C3A7b1590f52793f7d09",
+  "timestamp": "2026-10-30T04:57:50.502Z",
+  "contracts": {
+    "weth9": "0x98811FF6CC74749DE01d479d3AeE14e53602e746",
+    "factory": "0xB862231b343231E456DF47E520b57e32AE079dD6",
+    "router": "0xe4f185a337211019ac116f35267c932979Edd5e7",
+    "npm": "0x628f0750881A90eB26bd30775E00a3eB3811dbb5"
+  },
+  "tokens": {
+    "TALPHA": {
+      "address": "0x747e0179896617E3AcEC745BEEb22696fc849848",
+      "decimals": 18
+    },
+    "TBETA": {
+      "address": "0xe326f0606E27c34a29DEB9E72a0cCdecA6cA6593",
+      "decimals": 18
+    },
+    "tUSDT": {
+      "address": "0x7de25caAc85194219bAbbDC2106c49fF91784cB6",
+      "decimals": 6
+    }
+  },
+  "pools": {
+    "TALPHA/tUSDT": {
+      "address": "0x6133D76B308556eE4115B5ED2BD59c03f260867a",
+      "price": "2.50 tUSDT per TALPHA"
+    },
+    "TBETA/tUSDT": {
+      "address": "0x3cA388AC01b332b09EFC00D87eBFDDFdA0749Bc2",
+      "price": "1.00 tUSDT per TBETA"
+    },
+    "TALPHA/TBETA": {
+      "address": "0xC28Cb933EE9411e6B5e18736CbacF2d01c9D263d",
+      "price": "2.60 TBETA per TALPHA (mispriced!)"
+    }
+  }
+}

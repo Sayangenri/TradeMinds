@@ -1,0 +1,39 @@
+{
+  "name": "arb-hardhat",
+  "version": "1.0.0",
+  "description": "Local V2-style mock pools for arbitrage-detection practice",
+  "type": "commonjs",
+  "scripts": {
+    "compile": "hardhat compile",
+    "node": "hardhat node",
+    "deploy": "hardhat run scripts/deploy.js --network localhost",
+    "detect": "hardhat run scripts/detect.js --network localhost",
+    "all": "hardhat run scripts/deploy_and_detect.js",
+    "bot": "hardhat run scripts/live_arb_bot.js",
+    "monitor": "node scripts/live_price_monitor.js",
+    "paper": "node scripts/paper_trader.js",
+    "start": "node index.js",
+    "agent": "MODE=simulate node index.js",
+    "agent:live": "node index.js",
+    "dashboard": "MODE=simulate node dashboard.js",
+    "dashboard:live": "node dashboard.js",
+    "approve": "node scripts/approve_tokens.js",
+    "market-maker": "node scripts/market_maker.js",
+    "deploy:testnet": "npx hardhat run scripts/deploy_testnet_dex.js --network hsk_testnet",
+    "deploy:local": "FORK_HSK=1 npx hardhat run scripts/deploy_testnet_dex.js",
+    "fork": "FORK_HSK=1 npx hardhat node"
+  },
+  "devDependencies": {
+    "hardhat": "^2.22.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@nomicfoundation/hardhat-ethers": "^3.1.3",
+    "@uniswap/v3-core": "^1.0.1",
+    "@uniswap/v3-periphery": "^1.4.4",
+    "dotenv": "^16.4.7",
+    "ethers": "^6.17.0",
+    "express": "^5.3.0",
+    "solc": "^0.8.24"
+  }
+}

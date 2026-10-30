@@ -1,0 +1,7 @@
+node_modules/
+.env
+artifacts/
+cache/
+typechain-types/
+price_history.json
+.claude/
