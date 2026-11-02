@@ -193,7 +193,8 @@ async function executeArbLive(opportunity) {
     let receipt;
     if (useVault) {
       const vault = new ethers.Contract(tokens.vault, VAULT_ABI, wallet);
-      const tx = await vault.executeArb(encodedPath, startAmount, startAmount);
+      const minOut = startAmount * 98n / 100n;
+      const tx = await vault.executeArb(encodedPath, startAmount, minOut);
       receipt = await tx.wait();
     } else {
       const router = new ethers.Contract(tokens.router, ROUTER_ABI, wallet);
@@ -205,7 +206,7 @@ async function executeArbLive(opportunity) {
       const tx = await router.exactInput({
         path: encodedPath, recipient: wallet.address,
         deadline: Math.floor(Date.now() / 1000) + 300,
-        amountIn: startAmount, amountOutMinimum: startAmount,
+        amountIn: startAmount, amountOutMinimum: startAmount * 98n / 100n,
       });
       receipt = await tx.wait();
     }
@@ -234,8 +235,7 @@ async function executeArbLive(opportunity) {
 }
 
 async function execute(signal, poolName, price) {
-  if (config.MODE === "live") return executeLive(signal, poolName, price);
-  return executePaper(signal, poolName, price);
+  return executeLive(signal, poolName, price);
 }
 
 module.exports = { execute, executePaper, executeLive, executeArbLive };

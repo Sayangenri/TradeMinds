@@ -1,6 +1,35 @@
-# AI Agent Trading Bot — HashKey Chain
+# Alphageni — AI Agent Trading Bot on HashKey Chain
 
-An autonomous AI-powered trading bot deployed on HashKey Chain (HSK). The AI agent monitors markets, reads news, detects arbitrage, executes on-chain swaps, and manages risk — all without human intervention.
+An autonomous AI-powered trading bot deployed on HashKey Chain (HSK). The AI agent monitors markets, reads news, detects triangular arbitrage, executes on-chain swaps through AgentVault, and manages risk — all without human intervention.
+
+## Latest Test Results (Profit)
+
+| Metric | Result |
+|--------|--------|
+| **Net Profit** | **+$0.79** |
+| Win Rate | **100%** (3/3 trades) |
+| Strategy | Triangular Arbitrage via AgentVault |
+| Successful Txs | 3 on-chain arb transactions |
+| Agent Cycles | 10 AI decision cycles |
+| Losses | **0** |
+
+### On-Chain Arb Transactions (Verifiable)
+
+| # | Tx Hash | Profit | Route |
+|---|---------|--------|-------|
+| 1 | `0x9aeaaed1e3b3a701868121da2684fcd03dcc8783a2193a768d77e697227b6d67` | +$0.26 | tUSDT → TALPHA → TBETA → tUSDT |
+| 2 | `0x0a78472e9adc2c6c452745edbb72ce770e92137ca84746d2a94b7157b852048f` | +$0.26 | TBETA → tUSDT → TALPHA → TBETA |
+| 3 | `0x5f730e0ee0879c203b2ea651090b52a3b31271d19e88f2a9453ad1fe337ae209` | +$0.26 | TBETA → tUSDT → TALPHA → TBETA |
+
+**How it works:** The agent exploits price discrepancies between 3 Uniswap V3 pools. The implied cross-rate from TALPHA/tUSDT and TBETA/tUSDT pools differs from the actual TALPHA/TBETA pool price by ~1.03%. After deducting 0.9% in pool fees (0.3% × 3 hops), the net profit is 0.13% per round trip. All trades are executed on-chain through AgentVault smart contract.
+
+### Dashboard Screenshots
+
+![Dashboard — AI Brain, Live Prices, Portfolio](screenshots/dashboard-top.jpg)
+*Live dashboard showing AI agent reasoning (Cycle #10), real-time pool prices, and portfolio with +$0.79 P&L*
+
+![Dashboard — Trade History with On-Chain Tx Hashes](screenshots/dashboard-trades.jpg)
+*Trade history showing 3 successful triangular arb trades via AgentVault, each with verifiable on-chain tx hash, 100% win rate*
 
 ## Dual-Mode Trading: Trading + Arbitrage in One Agent
 
@@ -273,9 +302,9 @@ Natural language also works: "how is my portfolio doing?", "why did you sell TAL
 └── .env                  # Environment configuration
 ```
 
-## Live Test Results (HSK Testnet)
+## Historical Test Results (HSK Testnet)
 
-5-minute live test on HSK Testnet with market maker generating on-chain price movement:
+Earlier 5-minute live test on HSK Testnet with market maker generating on-chain price movement:
 
 | Metric | Result |
 |--------|--------|

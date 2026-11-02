@@ -1,4 +1,4 @@
-# SynapseFi — AI Trading Agent on HashKey Chain
+# Alphageni — AI Trading Agent on HashKey Chain
 
 **Autonomous AI trading agent that combines triangular arbitrage detection across Uniswap V3 pools with news-driven directional trading — all executed on-chain through AgentVault smart contract with real-time risk enforcement.**
 

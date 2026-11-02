@@ -42,13 +42,13 @@ module.exports = {
   ARB_SCAN_MS:  (process.env.MODE === "simulate") ? 30_000 : 2 * 60_000,
 
   STARTING_BALANCE:    10_000,
-  MAX_POSITION_PCT:    5,
-  STOP_LOSS_PCT:       3,
-  TAKE_PROFIT_PCT:     5,
-  DAILY_LOSS_LIMIT_PCT: 2,
-  MAX_OPEN_POSITIONS:  3,
+  MAX_POSITION_PCT:    3,
+  STOP_LOSS_PCT:       1.5,
+  TAKE_PROFIT_PCT:     3,
+  DAILY_LOSS_LIMIT_PCT: 1,
+  MAX_OPEN_POSITIONS:  2,
 
-  MODE: process.env.MODE || "paper",  // "paper" | "live" | "simulate"
+  MODE: process.env.MODE || "live",  // "live" | "simulate"
   PRIVATE_KEY: process.env.PRIVATE_KEY || null,
   SWAP_ROUTER: process.env.SWAP_ROUTER || "0x56d15cF00b5D853D6eE4CbB1463E6DAD2899fBf5",
   SLIPPAGE_PCT: 1,
@@ -58,7 +58,7 @@ module.exports = {
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || null,
   AI_MODEL: (() => {
     const provider = process.env.AI_PROVIDER || "anthropic";
-    const fallback = provider === "openrouter" ? "anthropic/claude-sonnet-4.5" : "claude-sonnet-4-20250514";
+    const fallback = provider === "openrouter" ? "deepseek/deepseek-chat-v3-0324" : "claude-sonnet-4-20250514";
     const model = process.env.AI_MODEL || fallback;
     if (provider === "openrouter" && !model.includes("/")) return "anthropic/" + model;
     return model;

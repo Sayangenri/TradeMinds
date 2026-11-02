@@ -2,7 +2,7 @@ const config = require("./config");
 const history = require("./history");
 const risk = require("./risk");
 const { scanArbitrage, getPoolPrice } = require("./arb");
-const { execute, executePaper, executeArbLive } = require("./executor");
+const { execute, executeArbLive } = require("./executor");
 const { nextPrice, isSimulating } = require("./simulator");
 const { readPool } = require("./chain");
 const { getNewsSummaryForAgent } = require("./news");
@@ -108,23 +108,32 @@ You can issue multiple actions per decision cycle. Return a JSON object with:
 - "next_check_seconds": How soon to run the next decision cycle (15-120)
 - "market_assessment": One sentence on the current market condition
 
+## CRITICAL: PROFIT-FIRST RULES
+- This is a TESTNET — gas fees are essentially zero. Even small arbitrage profits are worth executing.
+- ARBITRAGE is your primary profit source. ALWAYS execute profitable arb routes immediately — they are risk-free and gas-free on testnet.
+- Each swap costs 0.3% in pool fees. A buy+sell round trip costs ~0.6%. NEVER enter a directional trade unless you expect at least 1% price movement.
+- Directional trades are SECONDARY. Only buy/sell when volatility is high AND there is a strong catalyst.
+- In flat/low-volatility markets: execute arb if available, otherwise HOLD.
+- NEVER close a position at a loss unless it hits stop-loss.
+- If recent trades lost money, switch to DEFENSIVE and only do arb until you recover.
+
 ## NEWS-DRIVEN TRADING
-If the "news" field contains recent headlines, you MUST factor them into your decisions:
-- HIGH impact BULLISH news on a token → consider buying that token (confidence boost +0.15)
-- HIGH impact BEARISH news on a token → consider selling/avoiding that token
-- If you hold a position and bearish news hits that token → consider closing early
+If the "news" field contains recent headlines, factor them into your decisions:
+- HIGH impact BULLISH news on a token → consider buying ONLY if price shows momentum (change > 0.3%)
+- HIGH impact BEARISH news on a token → avoid buying, consider closing existing positions
 - Reference the specific headline in your reasoning when news influences a decision
-- News sentiment can override technical signals (e.g., buy on bullish news even if momentum is flat)
+- News alone is NOT enough to trade — you also need price movement or arb opportunity
 
 ## DECISION RULES
 1. ALWAYS provide reasoning before actions — explain your thought process
 2. You can issue multiple actions (e.g., close one position AND open another AND execute an arb)
-3. For arb: if profitable opportunities exist, strongly consider executing them
-4. For trades: only trade when you have conviction (confidence > 0.6)
-5. Actively manage positions — don't let losers run, but don't panic-sell noise
-6. Adapt your strategy: if recent trades were losses, be more defensive
-7. If volatility is low and no arb, say "hold" — being idle is a valid strategy
+3. PRIORITY ORDER: execute arb > hold profitable positions > close at take-profit > open new trade
+4. For arb: if ANY profitable opportunity exists (even 0.01%), ALWAYS execute it — gas is free on testnet
+5. For trades: only trade when confidence > 0.7 AND price volatility > 0.3%
+6. NEVER sell at a loss unless stop-loss is hit — hold and wait for recovery
+7. If volatility is low and no arb, say "hold" — being idle is the correct strategy
 8. When news is present, mention it in your reasoning — show that you read and reacted to it
+9. Prefer fewer, higher-quality trades over many small trades
 
 Return ONLY valid JSON. No markdown, no code fences.`;
 }
@@ -270,14 +279,12 @@ async function executeAction(action, prices, arbOpportunities) {
       for (const step of opp.steps) {
         console.log(`     ${step.pool}: ${step.in} → ${step.out}`);
       }
-      if (config.MODE === "live") {
-        const arbResult = await executeArbLive(opp);
-        if (arbResult.executed) {
-          console.log(`  💰 ARB LIVE TX: ${arbResult.txHash}`);
-        }
-        return arbResult;
+      const arbResult = await executeArbLive(opp);
+      if (arbResult.executed) {
+        console.log(`  💰 ARB LIVE TX: ${arbResult.txHash}`);
+      } else {
+        console.log(`  ❌ ARB FAILED: ${arbResult.reason}`);
       }
-      const arbResult = await executeArbPaper(opp);
       return arbResult;
     }
 
@@ -308,7 +315,7 @@ async function executeAction(action, prices, arbOpportunities) {
     case "scan_arb": {
       console.log("  🔍 Agent triggered arb scan");
       const poolAddrs = config.POOLS.map(p => p.addr);
-      const opps = await scanArbitrage(poolAddrs, 1000);
+      const opps = await scanArbitrage(poolAddrs, 200);
       return { executed: true, action: "scan_arb", opportunities: opps.length };
     }
 
@@ -319,31 +326,6 @@ async function executeAction(action, prices, arbOpportunities) {
     default:
       return { executed: false, reason: `Unknown action type: ${action.type}` };
   }
-}
-
-async function executeArbPaper(opportunity) {
-  const profit = opportunity.profit;
-  const profitPct = opportunity.profitPct;
-
-  risk.state.balance += profit;
-  risk.state.totalPnl += profit;
-  risk.state.dailyPnl += profit;
-  risk.state.totalTrades++;
-
-  risk.state.closedToday.push({
-    token: "ARB",
-    entryPrice: opportunity.startAmount,
-    closePrice: opportunity.endAmount,
-    amount: 1,
-    costUsdt: opportunity.startAmount,
-    pnl: profit,
-    pnlPct: profitPct,
-    reason: "triangular-arb",
-    closedAt: Date.now(),
-  });
-
-  console.log(`  💰 ARB PROFIT: $${profit.toFixed(2)} (${profitPct.toFixed(2)}%) on $${opportunity.startAmount}`);
-  return { executed: true, action: "arb", profit, profitPct, steps: opportunity.steps };
 }
 
 module.exports = { runAgentCycle, gatherSystemState, getActionLog, log };
