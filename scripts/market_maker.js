@@ -15,6 +15,11 @@ const ROUTER_ABI = [
 
 const router = new ethers.Contract(ROUTER, ROUTER_ABI, wallet);
 
+const ERC20_ABI = [
+  "function approve(address, uint256) returns (bool)",
+  "function allowance(address, address) view returns (uint256)",
+];
+
 const TOKENS = {
   TALPHA: { addr: dep.tokens.TALPHA.address, decimals: 18 },
   TBETA:  { addr: dep.tokens.TBETA.address,  decimals: 18 },
@@ -61,6 +66,15 @@ async function main() {
   console.log("Market Maker — HSK Testnet");
   console.log(`Wallet: ${wallet.address}`);
   console.log(`Swap interval: ${INTERVAL_MS / 1000}s\n`);
+
+  // Swaps fail with "STF" if any router allowance has been overwritten with a finite amount.
+  for (const [name, info] of Object.entries(TOKENS)) {
+    const token = new ethers.Contract(info.addr, ERC20_ABI, wallet);
+    if ((await token.allowance(wallet.address, ROUTER)) < ethers.MaxUint256 / 2n) {
+      await (await token.approve(ROUTER, ethers.MaxUint256)).wait();
+      console.log(`Re-approved router for ${name}`);
+    }
+  }
 
   while (true) {
     await doRandomSwap();

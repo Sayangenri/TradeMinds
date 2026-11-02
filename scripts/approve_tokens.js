@@ -23,7 +23,8 @@ async function main() {
     const token = new ethers.Contract(info.address, ERC20_ABI, wallet);
     const allowance = await token.allowance(wallet.address, ROUTER);
 
-    if (allowance > 0n) {
+    // A finite leftover allowance runs out mid-session, so only an unlimited one counts.
+    if (allowance >= ethers.MaxUint256 / 2n) {
       console.log(`${name}: already approved (${ethers.formatUnits(allowance, info.decimals)})`);
       continue;
     }

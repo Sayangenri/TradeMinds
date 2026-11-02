@@ -147,6 +147,22 @@ async function executeLive(signal, poolName, price) {
   return { executed: false, reason: "Hold signal" };
 }
 
+// Pools can move between gas estimation and inclusion (e.g. earlier arbs in the same
+// cycle), and a tight estimate then runs out of gas when the swap crosses more ticks.
+function withGasHeadroom(estimate) {
+  return estimate * 130n / 100n;
+}
+
+function encodeArbPath(steps) {
+  const types = ["address"];
+  const values = [getTokenAddr(steps[0].inToken || steps[0].in)];
+  for (const step of steps) {
+    types.push("uint24", "address");
+    values.push(3000, getTokenAddr(step.outToken || step.out));
+  }
+  return ethers.solidityPacked(types, values);
+}
+
 async function executeArbLive(opportunity) {
   if (!config.PRIVATE_KEY) {
     return { executed: false, reason: "Live mode not configured" };
@@ -167,34 +183,15 @@ async function executeArbLive(opportunity) {
   const startAddr = getTokenAddr(firstIn);
   if (!startAddr) return { executed: false, reason: `Token address not found for ${firstIn}` };
   const startAmount = ethers.parseUnits(opportunity.startAmount.toFixed(Math.min(startDec, 6)), startDec);
-
-  const pathParts = [];
-  for (let i = 0; i < steps.length; i++) {
-    const inAddr = getTokenAddr(steps[i].inToken || steps[i].in);
-    if (i === 0) pathParts.push(inAddr);
-    pathParts.push(3000);
-    pathParts.push(getTokenAddr(steps[i].outToken || steps[i].out));
-  }
-
-  const types = [];
-  const values = [];
-  for (let i = 0; i < pathParts.length; i++) {
-    if (i % 2 === 0) {
-      types.push("address");
-      values.push(pathParts[i]);
-    } else {
-      types.push("uint24");
-      values.push(pathParts[i]);
-    }
-  }
-  const encodedPath = ethers.solidityPacked(types, values);
+  const encodedPath = encodeArbPath(steps);
 
   try {
     let receipt;
     if (useVault) {
       const vault = new ethers.Contract(tokens.vault, VAULT_ABI, wallet);
       const minOut = startAmount * 98n / 100n;
-      const tx = await vault.executeArb(encodedPath, startAmount, minOut);
+      const gasLimit = withGasHeadroom(await vault.executeArb.estimateGas(encodedPath, startAmount, minOut));
+      const tx = await vault.executeArb(encodedPath, startAmount, minOut, { gasLimit });
       receipt = await tx.wait();
     } else {
       const router = new ethers.Contract(tokens.router, ROUTER_ABI, wallet);
@@ -238,4 +235,4 @@ async function execute(signal, poolName, price) {
   return executeLive(signal, poolName, price);
 }
 
-module.exports = { execute, executePaper, executeLive, executeArbLive };
+module.exports = { execute, executePaper, executeLive, executeArbLive, encodeArbPath, withGasHeadroom, getTestnetTokens };

@@ -3,6 +3,7 @@ const history = require("./history");
 const risk = require("./risk");
 const { scanArbitrage, getPoolPrice } = require("./arb");
 const { execute, executeArbLive } = require("./executor");
+const { runUserArbs } = require("./userVaults");
 const { nextPrice, isSimulating } = require("./simulator");
 const { readPool } = require("./chain");
 const { getNewsSummaryForAgent } = require("./news");
@@ -275,6 +276,8 @@ async function executeAction(action, prices, arbOpportunities) {
         return { executed: false, reason: "No arb opportunity available" };
       }
       const opp = arbOpportunities[idx];
+      // Users' vault balances trade first so the house trade doesn't eat their edge.
+      const userArbs = await runUserArbs(arbOpportunities);
       console.log(`  🔄 EXECUTING ARB: $${opp.profit.toFixed(2)} profit (${opp.profitPct.toFixed(2)}%)`);
       for (const step of opp.steps) {
         console.log(`     ${step.pool}: ${step.in} → ${step.out}`);
@@ -285,7 +288,7 @@ async function executeAction(action, prices, arbOpportunities) {
       } else {
         console.log(`  ❌ ARB FAILED: ${arbResult.reason}`);
       }
-      return arbResult;
+      return { ...arbResult, userArbs };
     }
 
     case "close_position": {
@@ -316,7 +319,7 @@ async function executeAction(action, prices, arbOpportunities) {
       console.log("  🔍 Agent triggered arb scan");
       const poolAddrs = config.POOLS.map(p => p.addr);
       const opps = await scanArbitrage(poolAddrs, 200);
-      return { executed: true, action: "scan_arb", opportunities: opps.length };
+      return { executed: true, action: "scan_arb", opportunities: opps.length, found: opps };
     }
 
     case "hold":

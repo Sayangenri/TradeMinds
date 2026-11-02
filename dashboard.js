@@ -1,6 +1,9 @@
 const express = require("express");
 const path = require("path");
+const { ethers } = require("ethers");
 const config = require("./src/config");
+const { getTestnetTokens: loadTestnetTokens } = require("./src/executor");
+const { VAULT_ABI: USER_VAULT_ABI } = require("./src/userVaults");
 const { readPool } = require("./src/chain");
 const history = require("./src/history");
 const risk = require("./src/risk");
@@ -74,10 +77,69 @@ async function pollPrices() {
   return results;
 }
 
+// --- Arb detection history: what the bot found and what happened to it ---
+const ARB_HISTORY_MAX = 20;
+let arbHistory = [];
+let lastArbScanAt = null;
+
+function routeLabel(opp) {
+  return [opp.steps[0].inToken, ...opp.steps.map(s => s.outToken)].join(" → ");
+}
+
+// The three rotations of one cycle have the same profit; show the tUSDT one users trade.
+function displayOpp(opps) {
+  const best = opps[0].profitPct;
+  return opps.find(o => o.steps[0].inToken === "tUSDT" && o.profitPct >= best - 1e-9) || opps[0];
+}
+
+function arbSnapshot() {
+  return { opportunities: lastArbOpportunities.slice(0, 5), scannedAt: lastArbScanAt, history: arbHistory };
+}
+
+function recordArbScan(opps) {
+  lastArbOpportunities = opps;
+  lastArbScanAt = Date.now();
+  const open = arbHistory[0] && arbHistory[0].status === "open" ? arbHistory[0] : null;
+  if (opps.length === 0) {
+    if (open) open.status = "closed";
+  } else {
+    const o = displayOpp(opps);
+    const route = routeLabel(o);
+    if (open && open.route === route) {
+      Object.assign(open, { profitPct: o.profitPct, profit: o.profit, lastSeen: lastArbScanAt });
+    } else {
+      if (open) open.status = "closed";
+      arbHistory.unshift({
+        detectedAt: lastArbScanAt, lastSeen: lastArbScanAt, route,
+        profitPct: o.profitPct, profit: o.profit, startAmount: o.startAmount, status: "open",
+      });
+      arbHistory = arbHistory.slice(0, ARB_HISTORY_MAX);
+    }
+  }
+  broadcast("arb", arbSnapshot());
+}
+
+// The agent can trade the same detection again on a later cycle before the next scan,
+// so executions accumulate on the entry instead of replacing it.
+function recordArbExecution(res) {
+  const entry = arbHistory.find(e => e.status === "open") || (arbHistory[0] && arbHistory[0].status === "executed" ? arbHistory[0] : null);
+  if (!entry) return;
+  const userArbs = (res.userArbs || []).filter(u => u.executed);
+  const succeeded = res.executed || userArbs.length > 0;
+  if (succeeded) entry.status = "executed";
+  else if (entry.status === "open") entry.status = "failed";
+  if (res.executed) {
+    entry.houseTx = res.txHash;
+    entry.houseTrades = (entry.houseTrades || 0) + 1;
+  }
+  entry.userTrades = (entry.userTrades || 0) + userArbs.length;
+  entry.userProfit = (entry.userProfit || 0) + userArbs.reduce((sum, u) => sum + u.profit, 0);
+  broadcast("arb", arbSnapshot());
+}
+
 async function runArbScan() {
   const poolAddrs = config.POOLS.map(p => p.addr);
-  lastArbOpportunities = await scanArbitrage(poolAddrs, 200);
-  broadcast("arb", { opportunities: lastArbOpportunities.slice(0, 5) });
+  recordArbScan(await scanArbitrage(poolAddrs, 200));
   return lastArbOpportunities;
 }
 
@@ -114,6 +176,13 @@ async function runAgent() {
         reason: action.reason || res.action || '',
         time: Date.now(),
       });
+    }
+    if (!res) continue;
+    if (action.type === "scan_arb" && res.found) recordArbScan(res.found);
+    if (action.type === "execute_arb") recordArbExecution(res);
+    const userArbs = (res.userArbs || []).filter(u => u.executed);
+    if (userArbs.length > 0) {
+      broadcast("user_arbs", { users: userArbs.map(u => u.user.toLowerCase()) });
     }
   }
 
@@ -156,6 +225,10 @@ app.post("/api/chat", async (req, res) => {
   } catch (e) {
     res.status(500).json({ type: "error", message: e.message });
   }
+});
+
+app.get("/api/arb", (req, res) => {
+  res.json(arbSnapshot());
 });
 
 app.get("/api/trades", (req, res) => {
@@ -260,6 +333,142 @@ app.get("/api/events", (req, res) => {
   });
 });
 
+// --- Public faucet + user-wallet arb ---
+const FAUCET_ABI = [
+  "function claimFor(address recipient)",
+  "function dripAmount() view returns (uint256)",
+  "function nextClaimAt(address recipient) view returns (uint256)",
+];
+let faucetQueue = Promise.resolve();
+
+function getFaucet(runner) {
+  const addr = require("./testnet_deployment.json").contracts.faucet;
+  return addr ? new ethers.Contract(addr, FAUCET_ABI, runner) : null;
+}
+
+app.get("/api/faucet/status", async (req, res) => {
+  try {
+    const provider = new ethers.JsonRpcProvider(config.RPC_URL);
+    const faucet = getFaucet(provider);
+    if (!faucet) return res.status(503).json({ error: "Faucet not deployed" });
+    const tusdt = new ethers.Contract(loadTestnetTokens().tUSDT.addr, ["function balanceOf(address) view returns (uint256)"], provider);
+    const address = String(req.query.address || "");
+    const [drip, bal, next] = await Promise.all([
+      faucet.dripAmount(),
+      tusdt.balanceOf(faucet.target),
+      ethers.isAddress(address) ? faucet.nextClaimAt(address) : 0n,
+    ]);
+    res.json({
+      faucet: faucet.target,
+      dripAmount: ethers.formatUnits(drip, 6),
+      faucetBalance: ethers.formatUnits(bal, 6),
+      nextClaimAt: Number(next),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.shortMessage || e.message });
+  }
+});
+
+app.post("/api/faucet/claim", async (req, res) => {
+  const address = String(req.body?.address || "").trim();
+  if (!ethers.isAddress(address)) return res.status(400).json({ error: "Invalid wallet address" });
+  if (!config.PRIVATE_KEY) return res.status(503).json({ error: "Faucet relayer not configured" });
+
+  const run = async () => {
+    const wallet = new ethers.Wallet(config.PRIVATE_KEY, new ethers.JsonRpcProvider(config.RPC_URL));
+    const faucet = getFaucet(wallet);
+    if (!faucet) throw new Error("Faucet not deployed");
+    // The HSK testnet RPC drops revert reasons, so check the cooldown up front.
+    const next = Number(await faucet.nextClaimAt(address));
+    if (next > Math.floor(Date.now() / 1000)) {
+      throw Object.assign(new Error("Cooldown active"), { nextClaimAt: next });
+    }
+    await faucet.claimFor.staticCall(address);
+    const tx = await faucet.claimFor(address);
+    await tx.wait();
+    return tx.hash;
+  };
+
+  // Serialize relayed claims so concurrent requests don't reuse a nonce.
+  const pending = faucetQueue.then(run, run);
+  faucetQueue = pending.catch(() => {});
+  try {
+    const txHash = await pending;
+    console.log(`  [${ts()}] FAUCET: 50 tUSDT -> ${address} (tx ${txHash.slice(0, 12)}...)`);
+    res.json({ txHash });
+  } catch (e) {
+    const status = e.nextClaimAt ? 429 : 400;
+    res.status(status).json({ error: e.reason || e.shortMessage || e.message, nextClaimAt: e.nextClaimAt });
+  }
+});
+
+const USER_VAULT_LOG_CHUNK = 10_000;
+const blockTimeCache = new Map();
+
+app.get("/api/user-vault/:address", async (req, res) => {
+  const address = req.params.address;
+  if (!ethers.isAddress(address)) return res.status(400).json({ error: "Invalid wallet address" });
+  const dep = require("./testnet_deployment.json");
+  const vaultAddr = dep.contracts.userVault;
+  if (!vaultAddr) return res.status(503).json({ error: "User vault not deployed" });
+
+  try {
+    const provider = new ethers.JsonRpcProvider(config.RPC_URL);
+    const vault = new ethers.Contract(vaultAddr, [
+      ...USER_VAULT_ABI,
+      "function getUserStats(address) view returns (uint256 balance, uint256 deposited, uint256 withdrawn, uint256 profit, uint256 trades)",
+      "event Deposited(address indexed user, uint256 amount)",
+      "event Withdrawn(address indexed user, uint256 amount)",
+    ], provider);
+
+    const stats = await vault.getUserStats(address);
+    const iface = vault.interface;
+    const topics = [
+      ["Deposited", "Withdrawn", "ArbExecuted"].map(n => iface.getEvent(n).topicHash),
+      ethers.zeroPadValue(address, 32),
+    ];
+
+    const latest = await provider.getBlockNumber();
+    const logs = [];
+    for (let from = dep.contracts.userVaultDeployBlock || 0; from <= latest; from += USER_VAULT_LOG_CHUNK) {
+      const to = Math.min(from + USER_VAULT_LOG_CHUNK - 1, latest);
+      logs.push(...await provider.getLogs({ address: vaultAddr, topics, fromBlock: from, toBlock: to }));
+    }
+
+    const fmt = (v) => Number(ethers.formatUnits(v, 6));
+    const events = [];
+    for (const log of logs) {
+      const parsed = iface.parseLog(log);
+      if (!blockTimeCache.has(log.blockNumber)) {
+        const block = await provider.getBlock(log.blockNumber);
+        blockTimeCache.set(log.blockNumber, block ? block.timestamp * 1000 : null);
+      }
+      const ev = { type: parsed.name, txHash: log.transactionHash, timestamp: blockTimeCache.get(log.blockNumber) };
+      if (parsed.name === "ArbExecuted") {
+        ev.amountIn = fmt(parsed.args.amountIn);
+        ev.amountOut = fmt(parsed.args.amountOut);
+        ev.profit = fmt(parsed.args.profit);
+      } else {
+        ev.amount = fmt(parsed.args.amount);
+      }
+      events.push(ev);
+    }
+    events.reverse();
+
+    res.json({
+      vault: vaultAddr,
+      balance: fmt(stats.balance),
+      deposited: fmt(stats.deposited),
+      withdrawn: fmt(stats.withdrawn),
+      profit: fmt(stats.profit),
+      trades: Number(stats.trades),
+      events,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.shortMessage || e.message });
+  }
+});
+
 // --- Dashboard HTML ---
 app.get("/", (req, res) => {
   res.send(getDashboardHTML());
@@ -320,6 +529,18 @@ function getDashboardHTML() {
   .arb-card { border: 1px solid #1a1a1a; padding: 14px; margin-bottom: 8px; }
   .arb-profit { font-family: 'JetBrains Mono', monospace; font-weight: 500; font-size: 14px; color: #6c6; }
   .arb-step { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #555; padding: 2px 0 2px 14px; }
+  .arb-empty { color: #444; font-size: 13px; margin-bottom: 8px; }
+  #arb-container .section-sub:first-child { margin-top: 0; }
+  .arb-hist { padding: 8px 0; border-bottom: 1px solid #111; }
+  .arb-hist-top { display: flex; gap: 12px; align-items: baseline; font-size: 12px; }
+  .arb-hist-time { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #444; }
+  .arb-hist-route { flex: 1; color: #bbb; }
+  .arb-hist-pct { font-family: 'JetBrains Mono', monospace; color: #6c6; }
+  .arb-hist-status { font-family: 'JetBrains Mono', monospace; font-size: 11px; margin-top: 3px; color: #555; }
+  .arb-hist-status.executed { color: #6c6; }
+  .arb-hist-status.open { color: #cc6; }
+  .arb-hist-status.failed { color: #c66; }
+  .arb-hist-status a { color: #555; }
   .position-card { border: 1px solid #1a1a1a; padding: 12px 14px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
   .position-card strong { font-weight: 500; }
   .vault-panel { margin-top: 12px; border-top: 1px solid #1a1a1a; padding-top: 12px; }
@@ -338,6 +559,20 @@ function getDashboardHTML() {
   .tx-status { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #666; margin-top: 8px; min-height: 16px; }
   .tx-status.success { color: #6c6; }
   .tx-status.error { color: #c66; }
+  .tx-status a { color: inherit; }
+  .try-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+  @media (max-width: 900px) { .try-grid { grid-template-columns: 1fr; } }
+  .try-hint { color: #666; font-size: 12px; line-height: 1.5; }
+  .try-route { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #888; margin-top: 10px; }
+  .try-route div { padding: 2px 0; }
+  .house-only { display: none; }
+  body.is-owner .house-only { display: block; }
+  .uv-event { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid #111; font-size: 12px; }
+  .uv-event .uv-type { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1px; color: #888; min-width: 70px; }
+  .uv-event .uv-main { flex: 1; color: #ccc; }
+  .uv-event .uv-main a { color: #555; font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+  .uv-event .uv-amt { font-family: 'JetBrains Mono', monospace; color: #ccc; }
+  .uv-event .uv-amt.pos { color: #6c6; }
   .tx-status.pending { color: #cc8; }
   .wallet-modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; justify-content:center; align-items:center; }
   .wallet-modal-overlay.show { display:flex; }
@@ -421,6 +656,44 @@ function getDashboardHTML() {
 </div>
 
 <div class="grid">
+  <!-- Try It Yourself -->
+  <div class="card full-width">
+    <div class="card-title">Try It Yourself</div>
+    <div class="try-grid">
+      <div>
+        <div class="section-sub">Step 1 — Get tUSDT</div>
+        <div class="try-hint">Paste your wallet address (or connect a wallet) to receive 50 tUSDT on HSK Testnet. One claim per address every 24 hours. <span id="faucet-left"></span></div>
+        <div class="deposit-row">
+          <input id="faucet-address" type="text" placeholder="0x… your wallet address" spellcheck="false" autocomplete="off">
+          <button class="btn" id="faucet-btn" onclick="claimFaucet()">GET 50 tUSDT</button>
+        </div>
+        <div class="tx-status" id="faucet-status"></div>
+      </div>
+      <div>
+        <div class="section-sub">Step 2 — Let the Agent Trade It</div>
+        <div class="try-hint">Deposit tUSDT into your own balance in the agent vault. When the AI finds an arbitrage, it trades your balance. The vault rejects any trade that returns less than it spent, and only you can withdraw. Deposit and withdraw need a little testnet HSK for gas.</div>
+        <div class="deposit-row">
+          <input id="user-deposit-amount" type="number" value="50" min="1" step="any">
+          <button class="btn btn-start" id="user-deposit-btn" onclick="depositUserVault()" disabled>DEPOSIT</button>
+          <button class="btn" id="user-withdraw-btn" onclick="withdrawUserVault()" disabled>WITHDRAW ALL</button>
+        </div>
+        <div class="tx-status" id="user-vault-status">Connect your wallet to deposit</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Your Vault -->
+  <div class="card">
+    <div class="card-title">Your Vault</div>
+    <div id="user-vault-stats"><div style="color:#444;font-size:13px">Connect wallet to see your vault</div></div>
+  </div>
+
+  <!-- Your Agent Trades -->
+  <div class="card">
+    <div class="card-title">Your Agent Trades</div>
+    <div id="user-vault-events" style="max-height:260px;overflow-y:auto"><div style="color:#444;font-size:13px">Connect wallet to see trades the agent made for you</div></div>
+  </div>
+
   <!-- Wallet Balances -->
   <div class="card">
     <div class="card-title">Wallet Balances</div>
@@ -430,8 +703,8 @@ function getDashboardHTML() {
   </div>
 
   <!-- Vault Balances -->
-  <div class="card" id="vault-card">
-    <div class="card-title">AgentVault Balances</div>
+  <div class="card house-only" id="vault-card">
+    <div class="card-title">House AgentVault (owner only)</div>
     <div id="vault-not-connected" style="color:#444;font-size:13px">Connect wallet to see vault</div>
     <div id="vault-connected" style="display:none">
       <div id="vault-balances">
@@ -514,22 +787,22 @@ function getDashboardHTML() {
   </div>
 
   <!-- Portfolio (from agent) -->
-  <div class="card">
-    <div class="card-title">Agent Portfolio</div>
+  <div class="card house-only">
+    <div class="card-title">House Agent Portfolio</div>
     <div id="portfolio-section" style="color:#444;font-size:13px">Start agent to see portfolio tracking</div>
   </div>
 
   <!-- On-Chain Vault Events -->
-  <div class="card full-width">
-    <div class="card-title">On-Chain Transactions (from AgentVault)</div>
+  <div class="card full-width house-only">
+    <div class="card-title">House On-Chain Transactions (from AgentVault)</div>
     <div id="onchain-events" style="max-height:300px;overflow-y:auto">
       <div style="color:#444;font-size:13px">Connect wallet to load on-chain history</div>
     </div>
   </div>
 
   <!-- Trade History (this session) -->
-  <div class="card full-width">
-    <div class="card-title">Trade History (This Session)</div>
+  <div class="card full-width house-only">
+    <div class="card-title">House Trade History (This Session)</div>
     <div class="trade-summary">
       <div class="trade-summary-item"><div class="trade-summary-label">Total</div><div class="trade-summary-value" id="th-total">0</div></div>
       <div class="trade-summary-item"><div class="trade-summary-label">Arb</div><div class="trade-summary-value" id="th-arbs">0</div></div>
@@ -610,8 +883,7 @@ es.addEventListener('agent', function(e) {
 });
 
 es.addEventListener('arb', function(e) {
-  var d = JSON.parse(e.data);
-  updateArb(d.opportunities);
+  updateArb(JSON.parse(e.data));
 });
 
 es.addEventListener('news', function(e) {
@@ -729,17 +1001,68 @@ function updatePositions(positions) {
   }).join('');
 }
 
-function updateArb(opps) {
+function el(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function arbOutcome(h) {
+  if (h.status === 'open') return { text: 'Live — waiting for the agent', cls: 'open' };
+  if (h.status === 'closed') return { text: 'Gap closed before a trade', cls: 'closed' };
+  if (h.status === 'failed') return { text: 'Trade attempted, reverted', cls: 'failed' };
+  var parts = [];
+  if (h.userTrades > 0) parts.push(h.userTrades + ' user vault trade' + (h.userTrades > 1 ? 's' : '') + ' +' + h.userProfit.toFixed(4) + ' tUSDT');
+  if (h.houseTrades > 0) parts.push(h.houseTrades + ' house vault trade' + (h.houseTrades > 1 ? 's' : ''));
+  return { text: 'Traded: ' + parts.join(' · '), cls: 'executed' };
+}
+
+function updateArb(d) {
   var c = document.getElementById('arb-container');
-  if (!opps || opps.length === 0) {
-    c.innerHTML = '<div style="color:#444;font-size:13px">No profitable routes found</div>';
+  c.innerHTML = '';
+  var opps = d.opportunities || [];
+
+  c.appendChild(el('div', 'section-sub', 'Live now'));
+  if (opps.length > 0) {
+    var best = opps.find(function(o) { return o.steps[0].inToken === 'tUSDT' && o.profitPct >= opps[0].profitPct - 1e-9; }) || opps[0];
+    var card = el('div', 'arb-card');
+    card.appendChild(el('div', 'arb-profit', '+' + best.profitPct.toFixed(3) + '%  (+$' + best.profit.toFixed(2) + ' on $' + best.startAmount + ')'));
+    best.steps.forEach(function(s) { card.appendChild(el('div', 'arb-step', s.pool + ': ' + s.in + ' → ' + s.out)); });
+    c.appendChild(card);
+  } else {
+    var when = d.scannedAt ? ' · last scan ' + new Date(d.scannedAt).toLocaleTimeString() : '';
+    c.appendChild(el('div', 'arb-empty', 'No profitable route right now' + when));
+  }
+
+  c.appendChild(el('div', 'section-sub', 'Recently detected'));
+  var history = d.history || [];
+  if (history.length === 0) {
+    c.appendChild(el('div', 'arb-empty', 'Nothing detected yet — start the agent to scan'));
     return;
   }
-  c.innerHTML = opps.map(function(o) {
-    var steps = (o.steps || []).map(function(s) { return '<div class="arb-step">' + s.pool + ': ' + s.in + ' &rarr; ' + s.out + '</div>'; }).join('');
-    return '<div class="arb-card"><div class="arb-profit">+$' + o.profit.toFixed(2) + ' (' + o.profitPct.toFixed(2) + '%)</div>' + steps + '</div>';
-  }).join('');
+  history.forEach(function(h) {
+    var row = el('div', 'arb-hist');
+    var top = el('div', 'arb-hist-top');
+    top.appendChild(el('span', 'arb-hist-time', new Date(h.detectedAt).toLocaleTimeString()));
+    top.appendChild(el('span', 'arb-hist-route', h.route));
+    top.appendChild(el('span', 'arb-hist-pct', '+' + h.profitPct.toFixed(3) + '%'));
+    row.appendChild(top);
+    var out = arbOutcome(h);
+    var status = el('div', 'arb-hist-status ' + out.cls, out.text);
+    if (h.houseTx) {
+      var a = el('a', null, ' ' + h.houseTx.slice(0, 10) + '…');
+      a.href = '${EXPLORER}/tx/' + h.houseTx;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      status.appendChild(a);
+    }
+    row.appendChild(status);
+    c.appendChild(row);
+  });
 }
+
+fetch('/api/arb').then(function(r) { return r.json(); }).then(updateArb).catch(function() {});
 
 function pnlColor(val) {
   var n = parseFloat(String(val).replace('$', ''));
@@ -1082,7 +1405,19 @@ async function doConnect(provider, walletName) {
 
     await refreshWalletBalances();
 
+    var faucetInput = document.getElementById('faucet-address');
+    if (!faucetInput.value) faucetInput.value = walletAddress;
+    if (USER_VAULT_ADDR) {
+      userVaultContract = new ethers.Contract(USER_VAULT_ADDR, USER_VAULT_ABI, walletSigner);
+      document.getElementById('user-deposit-btn').disabled = false;
+      document.getElementById('user-withdraw-btn').disabled = false;
+      setStatus('user-vault-status', '');
+      refreshUserVault();
+    }
+
     if (VAULT_ADDR) {
+      var houseState = await new ethers.Contract(VAULT_ADDR, VAULT_ABI, walletProvider).getVaultState();
+      if (houseState[0].toLowerCase() === walletAddress.toLowerCase()) document.body.classList.add('is-owner');
       vaultContract = new ethers.Contract(VAULT_ADDR, VAULT_ABI, walletSigner);
       document.getElementById('vault-not-connected').style.display = 'none';
       document.getElementById('vault-connected').style.display = 'block';
@@ -1265,6 +1600,214 @@ setInterval(function() {
   if (vaultContract) refreshVault();
   if (walletAddress) refreshWalletBalances();
 }, 30000);
+
+// === FAUCET + PER-USER AGENT VAULT ===
+var EXPLORER_URL = '${EXPLORER}';
+var USER_VAULT_ADDR = '${require("./testnet_deployment.json").contracts.userVault || ""}';
+var USER_VAULT_ABI = [
+  'function deposit(uint256 amount)',
+  'function withdraw(uint256 amount)',
+  'function balanceOf(address) view returns (uint256)'
+];
+var userVaultContract = null;
+
+function setStatus(id, msg, type, txHash) {
+  var el = document.getElementById(id);
+  el.className = 'tx-status ' + (type || '');
+  el.textContent = msg;
+  if (txHash) {
+    var a = document.createElement('a');
+    a.href = EXPLORER_URL + '/tx/' + txHash;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = ' ' + txHash.slice(0, 10) + '…';
+    el.appendChild(a);
+  }
+}
+
+async function loadFaucetStatus(addr) {
+  try {
+    var r = await fetch('/api/faucet/status' + (addr ? '?address=' + encodeURIComponent(addr) : ''));
+    var s = await r.json();
+    if (!r.ok) return null;
+    document.getElementById('faucet-left').textContent = 'Faucet holds ' + Number(s.faucetBalance).toLocaleString() + ' tUSDT.';
+    return s;
+  } catch (e) { return null; }
+}
+
+async function claimFaucet() {
+  var addr = document.getElementById('faucet-address').value.trim();
+  if (!ethers.isAddress(addr)) { setStatus('faucet-status', 'Enter a valid 0x wallet address', 'error'); return; }
+  var btn = document.getElementById('faucet-btn');
+  btn.disabled = true;
+  setStatus('faucet-status', 'Sending 50 tUSDT…', 'pending');
+  try {
+    var r = await fetch('/api/faucet/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: addr })
+    });
+    var d = await r.json();
+    if (!r.ok) throw Object.assign(new Error(d.error || 'Claim failed'), { nextClaimAt: d.nextClaimAt });
+    setStatus('faucet-status', 'Sent 50 tUSDT to ' + addr.slice(0, 6) + '…' + addr.slice(-4) + ' — tx', 'success', d.txHash);
+    addLog('Faucet sent 50 tUSDT to ' + addr.slice(0, 6) + '...' + addr.slice(-4));
+    loadFaucetStatus();
+    if (walletAddress) refreshWalletBalances();
+  } catch (e) {
+    var msg = e.message;
+    if (e.nextClaimAt) {
+      msg = 'This address already claimed in the last 24h — next claim ' + new Date(e.nextClaimAt * 1000).toLocaleString();
+    }
+    setStatus('faucet-status', msg.slice(0, 160), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function statRow(label, value, color) {
+  var row = document.createElement('div');
+  row.className = 'stat-row';
+  var l = document.createElement('span');
+  l.className = 'stat-label';
+  l.textContent = label;
+  var v = document.createElement('span');
+  v.className = 'stat-value';
+  v.textContent = value;
+  if (color) v.style.color = color;
+  row.appendChild(l);
+  row.appendChild(v);
+  return row;
+}
+
+function fmtUsdt(n) { return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }); }
+
+async function refreshUserVault() {
+  if (!walletAddress || !USER_VAULT_ADDR) return;
+  try {
+    var r = await fetch('/api/user-vault/' + walletAddress);
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Failed to load vault');
+
+    var stats = document.getElementById('user-vault-stats');
+    stats.innerHTML = '';
+    var pnlPct = d.deposited > 0 ? (d.profit / d.deposited * 100) : 0;
+    stats.appendChild(statRow('Balance', fmtUsdt(d.balance) + ' tUSDT'));
+    stats.appendChild(statRow('Deposited', fmtUsdt(d.deposited) + ' tUSDT'));
+    stats.appendChild(statRow('Withdrawn', fmtUsdt(d.withdrawn) + ' tUSDT'));
+    stats.appendChild(statRow('Agent Profit', '+' + fmtUsdt(d.profit) + ' tUSDT (' + pnlPct.toFixed(3) + '%)', d.profit > 0 ? '#6c6' : null));
+    stats.appendChild(statRow('Agent Trades', String(d.trades)));
+
+    var list = document.getElementById('user-vault-events');
+    list.innerHTML = '';
+    if (d.events.length === 0) {
+      list.innerHTML = '<div style="color:#444;font-size:13px">No activity yet — deposit tUSDT and the agent will trade it on the next arbitrage</div>';
+      return;
+    }
+    d.events.forEach(function(ev) {
+      var row = document.createElement('div');
+      row.className = 'uv-event';
+      var type = document.createElement('span');
+      type.className = 'uv-type';
+      var main = document.createElement('span');
+      main.className = 'uv-main';
+      var amt = document.createElement('span');
+      amt.className = 'uv-amt';
+      if (ev.type === 'ArbExecuted') {
+        type.textContent = 'AGENT ARB';
+        main.textContent = fmtUsdt(ev.amountIn) + ' → ' + fmtUsdt(ev.amountOut) + ' tUSDT ';
+        amt.textContent = '+' + ev.profit.toFixed(4);
+        amt.classList.add('pos');
+      } else {
+        type.textContent = ev.type === 'Deposited' ? 'DEPOSIT' : 'WITHDRAW';
+        main.textContent = (ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '') + ' ';
+        amt.textContent = (ev.type === 'Deposited' ? '+' : '−') + fmtUsdt(ev.amount);
+      }
+      var link = document.createElement('a');
+      link.href = EXPLORER_URL + '/tx/' + ev.txHash;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = ev.txHash.slice(0, 10) + '…';
+      main.appendChild(link);
+      row.appendChild(type);
+      row.appendChild(main);
+      row.appendChild(amt);
+      list.appendChild(row);
+    });
+  } catch (e) {
+    document.getElementById('user-vault-stats').textContent = 'Error loading vault: ' + e.message;
+  }
+}
+
+async function depositUserVault() {
+  if (!userVaultContract) return;
+  var amountStr = document.getElementById('user-deposit-amount').value;
+  if (!amountStr || Number(amountStr) <= 0) { setStatus('user-vault-status', 'Enter an amount to deposit', 'error'); return; }
+  var btn = document.getElementById('user-deposit-btn');
+  btn.disabled = true;
+  try {
+    var amount = ethers.parseUnits(Number(amountStr).toFixed(TOKENS.tUSDT.decimals), TOKENS.tUSDT.decimals);
+    if ((await walletProvider.getBalance(walletAddress)) === 0n) throw new Error('Your wallet has no testnet HSK to pay gas');
+    var usdt = new ethers.Contract(TOKENS.tUSDT.address, ERC20_ABI, walletSigner);
+    if ((await usdt.balanceOf(walletAddress)) < amount) throw new Error('Not enough tUSDT — claim from the faucet first');
+    if ((await usdt.allowance(walletAddress, USER_VAULT_ADDR)) < amount) {
+      setStatus('user-vault-status', 'Approve tUSDT for the vault in your wallet…', 'pending');
+      await (await usdt.approve(USER_VAULT_ADDR, amount)).wait();
+      // HSK testnet RPC nodes can lag a block behind; wait until the approval is visible.
+      for (var i = 0; i < 15 && (await usdt.allowance(walletAddress, USER_VAULT_ADDR)) < amount; i++) {
+        await new Promise(function(r) { setTimeout(r, 1000); });
+      }
+    }
+    setStatus('user-vault-status', 'Confirm the deposit in your wallet…', 'pending');
+    var tx = await userVaultContract.deposit(amount);
+    setStatus('user-vault-status', 'Depositing…', 'pending', tx.hash);
+    await tx.wait();
+    setStatus('user-vault-status', 'Deposited ' + amountStr + ' tUSDT — the agent will trade it on the next arbitrage. tx', 'success', tx.hash);
+    addLog('Deposited ' + amountStr + ' tUSDT into your agent vault');
+    refreshUserVault();
+    refreshWalletBalances();
+  } catch (e) {
+    setStatus('user-vault-status', 'Deposit failed: ' + (e.reason || e.shortMessage || e.message).slice(0, 160), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function withdrawUserVault() {
+  if (!userVaultContract) return;
+  var btn = document.getElementById('user-withdraw-btn');
+  btn.disabled = true;
+  try {
+    var bal = await userVaultContract.balanceOf(walletAddress);
+    if (bal === 0n) throw new Error('Nothing to withdraw');
+    if ((await walletProvider.getBalance(walletAddress)) === 0n) throw new Error('Your wallet has no testnet HSK to pay gas');
+    setStatus('user-vault-status', 'Confirm the withdrawal in your wallet…', 'pending');
+    var tx = await userVaultContract.withdraw(bal);
+    setStatus('user-vault-status', 'Withdrawing…', 'pending', tx.hash);
+    await tx.wait();
+    var amt = ethers.formatUnits(bal, TOKENS.tUSDT.decimals);
+    setStatus('user-vault-status', 'Withdrew ' + amt + ' tUSDT to your wallet — tx', 'success', tx.hash);
+    addLog('Withdrew ' + amt + ' tUSDT from your agent vault');
+    refreshUserVault();
+    refreshWalletBalances();
+  } catch (e) {
+    setStatus('user-vault-status', 'Withdraw failed: ' + (e.reason || e.shortMessage || e.message).slice(0, 160), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+es.addEventListener('user_arbs', function(e) {
+  if (!walletAddress) return;
+  var d = JSON.parse(e.data);
+  if (d.users.indexOf(walletAddress.toLowerCase()) >= 0) {
+    addLog('The agent just traded your vault');
+    refreshUserVault();
+  }
+});
+
+setInterval(function() { if (walletAddress) refreshUserVault(); }, 30000);
+
+loadFaucetStatus();
 </script>
 </body>
 </html>`;
