@@ -39,7 +39,7 @@ module.exports = {
   POLL_MS:      (process.env.MODE === "simulate") ? 5_000 : 15_000,
   SIGNAL_MS:    (process.env.MODE === "simulate") ? 30_000 : 5 * 60_000,
   REPORT_MS:    (process.env.MODE === "simulate") ? 60_000 : 5 * 60_000,
-  ARB_SCAN_MS:  (process.env.MODE === "simulate") ? 30_000 : 2 * 60_000,
+  ARB_SCAN_MS:  (process.env.MODE === "simulate") ? 30_000 : 30_000,
 
   STARTING_BALANCE:    10_000,
   MAX_POSITION_PCT:    3,

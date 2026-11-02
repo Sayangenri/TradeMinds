@@ -272,7 +272,7 @@ function getDashboardHTML() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Alphageni — AI Trading Agent</title>
+<title>TradeMinds — AI Trading Agent</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -408,7 +408,7 @@ function getDashboardHTML() {
 </head>
 <body>
 <div class="header">
-  <h1><span>Alphageni</span> — AI Trading Agent</h1>
+  <h1><span>TradeMinds</span> — AI Trading Agent</h1>
   <div class="header-controls">
     <span class="badge badge-mode" id="mode-badge">${config.MODE === 'live' ? 'LIVE' : 'SIM'}</span>
     <span class="badge badge-agent stopped" id="agent-badge">AGENT STOPPED</span>

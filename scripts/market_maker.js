@@ -22,12 +22,12 @@ const TOKENS = {
 };
 
 const SWAPS = [
-  { name: "Buy TALPHA",   tokenIn: "tUSDT",  tokenOut: "TALPHA", amount: "5",  decIn: 6,  fee: 3000 },
-  { name: "Sell TALPHA",  tokenIn: "TALPHA", tokenOut: "tUSDT",  amount: "2",  decIn: 18, fee: 3000 },
-  { name: "Buy TBETA",    tokenIn: "tUSDT",  tokenOut: "TBETA",  amount: "3",  decIn: 6,  fee: 3000 },
-  { name: "Sell TBETA",   tokenIn: "TBETA",  tokenOut: "tUSDT",  amount: "3",  decIn: 18, fee: 3000 },
-  { name: "TALPHA→TBETA", tokenIn: "TALPHA", tokenOut: "TBETA",  amount: "1",  decIn: 18, fee: 3000 },
-  { name: "TBETA→TALPHA", tokenIn: "TBETA",  tokenOut: "TALPHA", amount: "2",  decIn: 18, fee: 3000 },
+  { name: "Buy TALPHA",   tokenIn: "tUSDT",  tokenOut: "TALPHA", amount: "800",  decIn: 6,  fee: 3000 },
+  { name: "Sell TALPHA",  tokenIn: "TALPHA", tokenOut: "tUSDT",  amount: "300",  decIn: 18, fee: 3000 },
+  { name: "Buy TBETA",    tokenIn: "tUSDT",  tokenOut: "TBETA",  amount: "600",  decIn: 6,  fee: 3000 },
+  { name: "Sell TBETA",   tokenIn: "TBETA",  tokenOut: "tUSDT",  amount: "600",  decIn: 18, fee: 3000 },
+  { name: "TALPHA→TBETA", tokenIn: "TALPHA", tokenOut: "TBETA",  amount: "200",  decIn: 18, fee: 3000 },
+  { name: "TBETA→TALPHA", tokenIn: "TBETA",  tokenOut: "TALPHA", amount: "400",  decIn: 18, fee: 3000 },
 ];
 
 const INTERVAL_MS = 20_000;

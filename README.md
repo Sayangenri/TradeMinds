@@ -1,4 +1,4 @@
-# Alphageni — AI Agent Trading Bot on HashKey Chain
+# TradeMinds — AI Agent Trading Bot on HashKey Chain
 
 An autonomous AI-powered trading bot deployed on HashKey Chain (HSK). The AI agent monitors markets, reads news, detects triangular arbitrage, executes on-chain swaps through AgentVault, and manages risk — all without human intervention.
 
