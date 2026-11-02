@@ -121,6 +121,8 @@ function calculateArbProfit(route, startAmount) {
       poolAddr: pool.addr,
       in: `${amount.toFixed(4)} ${inSymbol}`,
       out: `${amountOut.toFixed(4)} ${outSymbol}`,
+      inToken: inSymbol,
+      outToken: outSymbol,
     });
 
     amount = amountOut;

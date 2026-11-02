@@ -1,0 +1,13 @@
+{
+  "startTime": "2026-10-26T13:54:23.720Z",
+  "endTime": "2026-10-26T18:41:46.258Z",
+  "startingBalance": 10000,
+  "finalBalance": 10000,
+  "pnl": 0,
+  "pnlPct": 0,
+  "totalPolls": 363,
+  "trades": [],
+  "gapSamples": 347,
+  "avgGap": 2.6767053143033848,
+  "maxGap": 2.686303724824601
+}

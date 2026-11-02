@@ -10,6 +10,13 @@ const ROUTER_ABI = [
   "function exactInput((bytes path, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum)) payable returns (uint256 amountOut)",
 ];
 
+const VAULT_ABI = [
+  "function executeTrade(address tokenIn, address tokenOut, uint24 fee, uint256 amountIn, uint256 amountOutMinimum) returns (uint256 amountOut)",
+  "function executeArb(bytes path, uint256 amountIn, uint256 amountOutMinimum) returns (uint256 amountOut)",
+  "function getTokenBalance(address token) view returns (uint256)",
+  "function getVaultState() view returns (address, address, address, uint256, uint256, uint256, uint256, uint256, bool)",
+];
+
 let TESTNET_TOKENS = null;
 function getTestnetTokens() {
   if (TESTNET_TOKENS) return TESTNET_TOKENS;
@@ -20,6 +27,7 @@ function getTestnetTokens() {
     TESTNET_TOKENS[name] = { addr: info.address, decimals: info.decimals };
   }
   TESTNET_TOKENS.router = dep.contracts.router;
+  TESTNET_TOKENS.vault = dep.contracts.vault || null;
   return TESTNET_TOKENS;
 }
 
@@ -71,7 +79,7 @@ async function executeLive(signal, poolName, price) {
   const tokens = getTestnetTokens();
   const provider = getProvider();
   const wallet = new ethers.Wallet(config.PRIVATE_KEY, provider);
-  const router = new ethers.Contract(tokens.router, ROUTER_ABI, wallet);
+  const useVault = !!tokens.vault;
 
   if (signal.action === "buy") {
     const check = risk.canOpenPosition(token, price, signal);
@@ -81,29 +89,28 @@ async function executeLive(signal, poolName, price) {
     const quoteDec = getTokenDecimals(quoteToken);
     const amountIn = ethers.parseUnits(amountUsdt.toFixed(Math.min(quoteDec, 6)), quoteDec);
 
-    const quoteContract = new ethers.Contract(quoteAddr, ERC20_ABI, wallet);
-    const allowance = await quoteContract.allowance(wallet.address, tokens.router);
-    if (allowance < amountIn) {
-      const tx = await quoteContract.approve(tokens.router, ethers.MaxUint256);
-      await tx.wait();
+    let receipt;
+    if (useVault) {
+      const vault = new ethers.Contract(tokens.vault, VAULT_ABI, wallet);
+      const tx = await vault.executeTrade(quoteAddr, tokenAddr, 3000, amountIn, 0n);
+      receipt = await tx.wait();
+    } else {
+      const router = new ethers.Contract(tokens.router, ROUTER_ABI, wallet);
+      const quoteContract = new ethers.Contract(quoteAddr, ERC20_ABI, wallet);
+      const allowance = await quoteContract.allowance(wallet.address, tokens.router);
+      if (allowance < amountIn) {
+        await (await quoteContract.approve(tokens.router, ethers.MaxUint256)).wait();
+      }
+      const tx = await router.exactInputSingle({
+        tokenIn: quoteAddr, tokenOut: tokenAddr, fee: 3000,
+        recipient: wallet.address, deadline: Math.floor(Date.now() / 1000) + 300,
+        amountIn, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n,
+      });
+      receipt = await tx.wait();
     }
 
-    const params = {
-      tokenIn: quoteAddr,
-      tokenOut: tokenAddr,
-      fee: 3000,
-      recipient: wallet.address,
-      deadline: Math.floor(Date.now() / 1000) + 300,
-      amountIn,
-      amountOutMinimum: 0n,
-      sqrtPriceLimitX96: 0n,
-    };
-
-    const tx = await router.exactInputSingle(params);
-    const receipt = await tx.wait();
-
     risk.openPosition(token, price, amountUsdt);
-    return { executed: true, action: "buy", token, price, cost: amountUsdt, txHash: receipt.hash, mode: "live" };
+    return { executed: true, action: "buy", token, price, cost: amountUsdt, txHash: receipt.hash, mode: useVault ? "vault" : "live" };
   }
 
   if (signal.action === "sell") {
@@ -113,29 +120,28 @@ async function executeLive(signal, poolName, price) {
     const tokenDec = getTokenDecimals(token);
     const amountIn = ethers.parseUnits(pos.amount.toFixed(Math.min(tokenDec, 8)), tokenDec);
 
-    const tokenContract = new ethers.Contract(tokenAddr, ERC20_ABI, wallet);
-    const allowance = await tokenContract.allowance(wallet.address, tokens.router);
-    if (allowance < amountIn) {
-      const tx = await tokenContract.approve(tokens.router, ethers.MaxUint256);
-      await tx.wait();
+    let receipt;
+    if (useVault) {
+      const vault = new ethers.Contract(tokens.vault, VAULT_ABI, wallet);
+      const tx = await vault.executeTrade(tokenAddr, quoteAddr, 3000, amountIn, 0n);
+      receipt = await tx.wait();
+    } else {
+      const router = new ethers.Contract(tokens.router, ROUTER_ABI, wallet);
+      const tokenContract = new ethers.Contract(tokenAddr, ERC20_ABI, wallet);
+      const allowance = await tokenContract.allowance(wallet.address, tokens.router);
+      if (allowance < amountIn) {
+        await (await tokenContract.approve(tokens.router, ethers.MaxUint256)).wait();
+      }
+      const tx = await router.exactInputSingle({
+        tokenIn: tokenAddr, tokenOut: quoteAddr, fee: 3000,
+        recipient: wallet.address, deadline: Math.floor(Date.now() / 1000) + 300,
+        amountIn, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n,
+      });
+      receipt = await tx.wait();
     }
 
-    const params = {
-      tokenIn: tokenAddr,
-      tokenOut: quoteAddr,
-      fee: 3000,
-      recipient: wallet.address,
-      deadline: Math.floor(Date.now() / 1000) + 300,
-      amountIn,
-      amountOutMinimum: 0n,
-      sqrtPriceLimitX96: 0n,
-    };
-
-    const tx = await router.exactInputSingle(params);
-    const receipt = await tx.wait();
-
     const result = risk.closePosition(token, price, "signal-sell");
-    return { executed: true, action: "sell", token, price, pnl: result?.pnl || 0, txHash: receipt.hash, mode: "live" };
+    return { executed: true, action: "sell", token, price, pnl: result?.pnl || 0, txHash: receipt.hash, mode: useVault ? "vault" : "live" };
   }
 
   return { executed: false, reason: "Hold signal" };
@@ -149,31 +155,25 @@ async function executeArbLive(opportunity) {
   const tokens = getTestnetTokens();
   const provider = getProvider();
   const wallet = new ethers.Wallet(config.PRIVATE_KEY, provider);
-  const router = new ethers.Contract(tokens.router, ROUTER_ABI, wallet);
+  const useVault = !!tokens.vault;
 
   const steps = opportunity.steps;
   if (!steps || steps.length === 0) {
     return { executed: false, reason: "No arb steps" };
   }
 
-  const firstIn = steps[0].in;
+  const firstIn = steps[0].inToken || steps[0].in;
   const startDec = getTokenDecimals(firstIn);
   const startAddr = getTokenAddr(firstIn);
+  if (!startAddr) return { executed: false, reason: `Token address not found for ${firstIn}` };
   const startAmount = ethers.parseUnits(opportunity.startAmount.toFixed(Math.min(startDec, 6)), startDec);
-
-  const startContract = new ethers.Contract(startAddr, ERC20_ABI, wallet);
-  const allowance = await startContract.allowance(wallet.address, tokens.router);
-  if (allowance < startAmount) {
-    const tx = await startContract.approve(tokens.router, ethers.MaxUint256);
-    await tx.wait();
-  }
 
   const pathParts = [];
   for (let i = 0; i < steps.length; i++) {
-    const inAddr = getTokenAddr(steps[i].in);
+    const inAddr = getTokenAddr(steps[i].inToken || steps[i].in);
     if (i === 0) pathParts.push(inAddr);
     pathParts.push(3000);
-    pathParts.push(getTokenAddr(steps[i].out));
+    pathParts.push(getTokenAddr(steps[i].outToken || steps[i].out));
   }
 
   const types = [];
@@ -189,17 +189,26 @@ async function executeArbLive(opportunity) {
   }
   const encodedPath = ethers.solidityPacked(types, values);
 
-  const params = {
-    path: encodedPath,
-    recipient: wallet.address,
-    deadline: Math.floor(Date.now() / 1000) + 300,
-    amountIn: startAmount,
-    amountOutMinimum: startAmount,
-  };
-
   try {
-    const tx = await router.exactInput(params);
-    const receipt = await tx.wait();
+    let receipt;
+    if (useVault) {
+      const vault = new ethers.Contract(tokens.vault, VAULT_ABI, wallet);
+      const tx = await vault.executeArb(encodedPath, startAmount, startAmount);
+      receipt = await tx.wait();
+    } else {
+      const router = new ethers.Contract(tokens.router, ROUTER_ABI, wallet);
+      const startContract = new ethers.Contract(startAddr, ERC20_ABI, wallet);
+      const allowance = await startContract.allowance(wallet.address, tokens.router);
+      if (allowance < startAmount) {
+        await (await startContract.approve(tokens.router, ethers.MaxUint256)).wait();
+      }
+      const tx = await router.exactInput({
+        path: encodedPath, recipient: wallet.address,
+        deadline: Math.floor(Date.now() / 1000) + 300,
+        amountIn: startAmount, amountOutMinimum: startAmount,
+      });
+      receipt = await tx.wait();
+    }
 
     const profit = opportunity.profit;
     risk.state.balance += profit;
@@ -214,11 +223,11 @@ async function executeArbLive(opportunity) {
       costUsdt: opportunity.startAmount,
       pnl: profit,
       pnlPct: opportunity.profitPct,
-      reason: "triangular-arb-live",
+      reason: useVault ? "triangular-arb-vault" : "triangular-arb-live",
       closedAt: Date.now(),
     });
 
-    return { executed: true, action: "arb", profit, profitPct: opportunity.profitPct, txHash: receipt.hash, mode: "live" };
+    return { executed: true, action: "arb", profit, profitPct: opportunity.profitPct, txHash: receipt.hash, mode: useVault ? "vault" : "live" };
   } catch (e) {
     return { executed: false, reason: `Arb tx failed: ${e.message.slice(0, 100)}` };
   }
