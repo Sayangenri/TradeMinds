@@ -48,12 +48,20 @@ One unified AI agent that does both simultaneously — not a separate arb bot an
 - News-reactive trading with sentiment analysis (bullish/bearish/neutral)
 - Dynamic cycle timing (15–120s) based on market activity
 
+### Chat Control — Natural Language Agent Interface
+Talk to your AI agent in real-time through the dashboard chat panel:
+- **Built-in Commands** — `status`, `balance`, `positions`, `history`, `arb`, `limits`, `pause`, `resume`, `help`
+- **Natural Language** — Ask questions like "how is my portfolio doing?", "why did you sell TALPHA?", "show me arb opportunities"
+- **Pause/Resume Trading** — Control the agent directly from chat: type `pause` to stop trading, `resume` to restart
+- **Agent Reasoning** — Ask "why" to see the agent's last decision reasoning and chain-of-thought
+- **Real-Time Responses** — Agent processes commands and returns live data from the system state
+
 ### Live Dashboard with Wallet Connect
-- Real-time web UI with SSE for instant updates
+- Real-time web UI with Server-Sent Events (SSE) for instant updates
 - MetaMask/OKX wallet connection via EIP-6963 discovery
 - Vault management: deposit, withdraw, emergency withdraw, pause/unpause
-- Trade history panel with P&L tracking
-- Chat control: natural language commands to query and control the agent
+- Trade history panel with P&L tracking and win rate
+- AI Brain panel showing live reasoning, strategy, and market assessment
 - Arbitrage monitor, position tracker, news feed, activity log
 
 ### Full DEX Deployment
